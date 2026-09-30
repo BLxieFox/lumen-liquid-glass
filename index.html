@@ -1,0 +1,1744 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#04060c">
+<title>LUMEN · 液态玻璃</title>
+<script>
+/* 主题必须在首帧前定下来，否则会闪一下 */
+(function () {
+  try {
+    var t = localStorage.getItem('lg-theme');
+    if (t !== 'light' && t !== 'dark') {
+      t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<style>
+/* ============================================================
+   0. 设计令牌（深浅色只换这一块）
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+
+:root{
+  color-scheme: dark;
+
+  --card-w: 420px;
+  --card-h: 604px;
+  --card-r: 30px;
+  --bleed: 60px;          /* 折射层向外溢出的像素，与 JS 的 PAD 无关 */
+  --pad: 92px;            /* 背景等高线画布的外扩，用于漂移 */
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --theme-dur: .72s;
+
+  --a1: #6d8bff;
+  --a2: #a868ff;
+  --a3: #3fd8ff;
+  --hot: #ffd166;         /* 终末地那种黄色点缀 */
+}
+
+html[data-theme="dark"]{
+  --bg-0: #04060c;
+  --ink:      #eaf0ff;
+  --ink-2:    rgba(234,240,255,.64);
+  --ink-3:    rgba(234,240,255,.38);
+  --line:     rgba(255,255,255,.10);
+  --line-2:   rgba(255,255,255,.055);
+  --glass:    rgba(255,255,255,.055);
+  --glass-2:  rgba(255,255,255,.085);
+  --frost-tint: linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.03) 44%, rgba(255,255,255,.07));
+  --frost-filter: blur(13px) saturate(1.8) brightness(1.02);
+  --edge-hi:  rgba(255,255,255,.60);
+  --edge-ring: rgba(255,255,255,.14);
+  --edge-lo:  rgba(255,255,255,.10);
+  --shadow-1: rgba(2,6,24,.85);
+  --shadow-2: rgba(2,6,24,.70);
+  --vig:      radial-gradient(120% 90% at 50% 40%, transparent 38%, rgba(2,4,12,.62) 100%);
+  --boot-bg:  #04060c;
+  --boot-ink: #cfe8ff;
+}
+
+html[data-theme="light"]{
+  --bg-0: #e9edf5;
+  --ink:      #0f1626;
+  --ink-2:    rgba(15,22,38,.66);
+  --ink-3:    rgba(15,22,38,.42);
+  --line:     rgba(18,34,66,.13);
+  --line-2:   rgba(18,34,66,.07);
+  --glass:    rgba(255,255,255,.58);
+  --glass-2:  rgba(255,255,255,.82);
+  --frost-tint: linear-gradient(180deg, rgba(255,255,255,.86), rgba(234,241,255,.62) 44%, rgba(255,255,255,.78));
+  --frost-filter: blur(14px) saturate(1.22) brightness(1.05);
+  --edge-hi:  rgba(255,255,255,1);
+  --edge-ring: rgba(88,118,166,.30);
+  --edge-lo:  rgba(96,124,168,.16);
+  --shadow-1: rgba(34,52,88,.34);
+  --shadow-2: rgba(34,52,88,.20);
+  --vig:      radial-gradient(120% 90% at 50% 40%, transparent 42%, rgba(120,140,175,.30) 100%);
+  --boot-bg:  #e9edf5;
+  --boot-ink: #16233a;
+}
+
+html, body { height: 100%; overflow-x: hidden; }
+body{
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* 只在切换主题的那一瞬间给全局加过渡，避免长期影响其它动效 */
+html.theming *{
+  transition: background-color var(--theme-dur) var(--ease),
+              color var(--theme-dur) var(--ease),
+              border-color var(--theme-dur) var(--ease),
+              box-shadow var(--theme-dur) var(--ease),
+              opacity var(--theme-dur) var(--ease) !important;
+}
+
+/* ============================================================
+   1. 背景：等高线
+   ============================================================ */
+#bg{
+  position: fixed; inset: 0; z-index: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+#bg canvas{
+  position: absolute;
+  left: calc(var(--pad) * -1);
+  top: calc(var(--pad) * -1);
+  width: calc(100% + var(--pad) * 2);
+  height: calc(100% + var(--pad) * 2);
+  display: block;
+  will-change: transform;
+}
+#cnvLight{ opacity: 0; }
+#bg .vig{
+  position: absolute; inset: 0; pointer-events: none;
+  background: var(--vig);
+}
+/* 缓慢扫过的亮带，给静态画面补一层动势 */
+#bg .scan{
+  position: absolute; left: -10%; right: -10%; height: 46%;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(150,215,255,.055), transparent);
+  animation: bgScan 17s linear infinite;
+}
+html[data-theme="light"] #bg .scan{
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,.5), transparent);
+  mix-blend-mode: soft-light;
+}
+@keyframes bgScan{
+  0%   { transform: translateY(-60%) }
+  100% { transform: translateY(320%) }
+}
+
+/* ============================================================
+   1.5 视图过渡（主题切换的整页渐变揭示）
+   ============================================================ */
+::view-transition-old(root),
+::view-transition-new(root){ animation: none; mix-blend-mode: normal; }
+::view-transition-old(root){ z-index: 1 }
+::view-transition-new(root){ z-index: 2 }
+
+/* ============================================================
+   2. 开场动画
+   ============================================================ */
+.boot{
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--boot-bg);
+  color: var(--boot-ink);
+  font-family: var(--mono);
+  display: grid; place-items: center;
+  overflow: hidden;
+}
+.boot.done{ display: none; }
+.boot.out{ animation: bootOut .78s cubic-bezier(.72,0,.24,1) forwards; }
+@keyframes bootOut{
+  0%   { opacity: 1; clip-path: inset(0 0 0 0); }
+  34%  { opacity: 1; clip-path: inset(49.75% 0 49.75% 0); }
+  60%  { opacity: 1; clip-path: inset(49.75% 0 49.75% 0); }
+  100% { opacity: 0; clip-path: inset(50% 0 50% 0); }
+}
+.boot-grid{
+  position: absolute; inset: -2px;
+  background-image:
+    linear-gradient(to right, currentColor 1px, transparent 1px),
+    linear-gradient(to bottom, currentColor 1px, transparent 1px);
+  background-size: 88px 88px;
+  opacity: .055;
+}
+.boot-scan{
+  position: absolute; left: 0; right: 0; height: 180px;
+  background: linear-gradient(180deg, transparent, rgba(90,200,255,.10), transparent);
+  animation: bootScan 2.1s linear infinite;
+}
+@keyframes bootScan{ from{ transform: translateY(-200px) } to{ transform: translateY(100vh) } }
+.boot-flash{
+  position: absolute; inset: 0; background: #dff2ff;
+  opacity: 0; pointer-events: none;
+}
+.boot.flash .boot-flash{ animation: bootFlash .5s ease-out forwards; }
+@keyframes bootFlash{ 0%{ opacity:.92 } 100%{ opacity:0 } }
+
+.boot-inner{ position: relative; width: min(560px, 82vw); }
+.boot-brand{
+  font-size: 11.5px; letter-spacing: .34em; opacity: .62;
+  margin-bottom: 20px; display: flex; align-items: center; gap: 10px;
+}
+.boot-brand::after{
+  content: ""; flex: 1; height: 1px; background: currentColor; opacity: .25;
+}
+.boot-brand b{ color: var(--hot); font-weight: 600; }
+.boot-log{ min-height: 116px; font-size: 12.5px; line-height: 1.95; letter-spacing: .02em; }
+.boot-log div{ opacity: 0; animation: bootLine .34s ease-out forwards; }
+.boot-log div i{ font-style: normal; color: #58e0c0; }
+.boot-log div u{ text-decoration: none; opacity: .5; }
+@keyframes bootLine{ from{ opacity:0; transform: translateX(-8px) } to{ opacity:.92; transform:none } }
+.boot-bar{
+  position: relative; height: 2px; margin-top: 18px;
+  background: currentColor; opacity: .16; overflow: hidden;
+}
+.boot-bar i{
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+  background: linear-gradient(90deg, #3fd8ff, var(--hot));
+  box-shadow: 0 0 12px rgba(90,200,255,.8);
+}
+.boot-meta{
+  display: flex; justify-content: space-between;
+  font-size: 11px; letter-spacing: .12em; opacity: .5; margin-top: 10px;
+}
+.boot-hint{
+  position: absolute; bottom: 30px; left: 0; right: 0;
+  text-align: center; font-size: 11px; letter-spacing: .22em; opacity: .34;
+  animation: hintPulse 2.4s ease-in-out infinite;
+}
+@keyframes hintPulse{ 0%,100%{opacity:.20} 50%{opacity:.46} }
+.boot.fadeout .boot-inner, .boot.fadeout .boot-hint{ opacity: 0; transition: opacity .3s; }
+
+/* ============================================================
+   3. 主题开关
+   ============================================================ */
+.theme{
+  position: fixed; top: 22px; right: 24px; z-index: 40;
+  width: 62px; height: 32px; padding: 0;
+  border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  box-shadow: inset 0 1px 0 var(--edge-hi), 0 8px 22px -12px var(--shadow-1);
+  display: block;
+  opacity: 0; animation: fadeUp .7s var(--ease) 2.9s forwards;
+}
+.theme-knob{
+  position: absolute; top: 3px; left: 3px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: linear-gradient(140deg, var(--a1), var(--a2));
+  box-shadow: 0 3px 10px -3px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.6);
+  transition: transform .5s cubic-bezier(.34,1.32,.5,1);
+}
+html[data-theme="light"] .theme-knob{ transform: translateX(30px); }
+.theme svg{
+  position: absolute; top: 50%; width: 14px; height: 14px; transform: translateY(-50%);
+  color: var(--ink-2);
+}
+.theme .ic-moon{ left: 8px; }
+.theme .ic-sun{ right: 8px; }
+html[data-theme="light"] .theme .ic-sun{ color: #fff; opacity: .9 }
+html[data-theme="dark"] .theme .ic-moon{ color: #fff; opacity: .9 }
+
+/* ============================================================
+   4. 布局
+   ============================================================ */
+.stage{
+  position: relative; z-index: 2;
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(20px, 2.6vw, 42px);
+  padding: 40px clamp(22px, 5vw, 78px);
+  overflow: clip;
+}
+
+/* ---- 左：方块矩阵标题 ---- */
+.left{
+  --left-shift: clamp(0px, 4vw, 72px);   /* 整块右移，把中间的空档压掉 */
+  width: 100%; max-width: 780px; justify-self: start;
+  opacity: 0;
+  transform: translateX(var(--left-shift)) translateY(22px);
+  transition: opacity 1s var(--ease), transform 1s var(--ease);
+}
+html.ready .left{ opacity: 1; transform: translateX(var(--left-shift)); }
+
+.hud{
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .24em;
+  color: var(--ink-3); margin-bottom: clamp(18px, 3vh, 34px);
+}
+.hud .dot{
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--hot); box-shadow: 0 0 12px var(--hot);
+  animation: blink 2.2s steps(1) infinite;
+}
+@keyframes blink{ 0%,70%{opacity:1} 71%,100%{opacity:.25} }
+.hud::after{
+  content: ""; flex: 1; height: 1px; max-width: 240px;
+  background: linear-gradient(90deg, var(--line), transparent);
+}
+
+.title{
+  display: block; width: 100%;
+  height: clamp(92px, 16.5vw, 196px);
+  margin: 0 0 clamp(14px, 2.2vh, 24px);
+  /* 标题整体微调量（0 = 与下方文字同一起始线） */
+  transform: translateX(var(--title-x, 0px));
+}
+.sub{
+  font-family: var(--mono);
+  font-size: clamp(13px, 1.45vw, 17px);
+  letter-spacing: .3em; color: var(--ink-2);
+  margin: 0 0 clamp(20px, 3.4vh, 38px);
+}
+.desc{
+  max-width: 560px; margin: 0 0 clamp(26px, 4.2vh, 48px);
+  font-size: clamp(14px, 1.12vw, 16px); line-height: 2.05; color: var(--ink-2);
+}
+.stats{
+  display: flex; flex-wrap: wrap; gap: 18px 52px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em; color: var(--ink-3);
+}
+.stats b{
+  display: block; font-size: clamp(24px, 2.4vw, 32px);
+  letter-spacing: -.01em; color: var(--ink); font-weight: 600;
+  margin-bottom: 7px; line-height: 1;
+}
+.hud-b{
+  display: flex; align-items: center; gap: 20px;
+  margin-top: clamp(26px, 4.4vh, 52px);
+  font-family: var(--mono); font-size: 11px; letter-spacing: .2em; color: var(--ink-3);
+}
+.hud-b span{ display: inline-flex; align-items: center; gap: 7px; }
+.hud-b i{ width: 5px; height: 5px; background: currentColor; opacity: .5; }
+
+/* 中文副标题的故障效果 */
+.glitch{ position: relative; display: inline-block; }
+.glitch::before, .glitch::after{
+  content: attr(data-text);
+  position: absolute; left: 0; top: 0; width: 100%;
+  pointer-events: none;
+}
+.glitch::before{ color: #2fd8ff; animation: gl1 3.6s steps(1) infinite; }
+.glitch::after { color: #ff4f8b; animation: gl2 2.9s steps(1) infinite; }
+@keyframes gl1{
+  0%, 88%, 100%{ clip-path: inset(0 0 100% 0); transform: none }
+  89%{ clip-path: inset(12% 0 62% 0); transform: translateX(-3px) }
+  91%{ clip-path: inset(48% 0 26% 0); transform: translateX(3px) }
+  93%{ clip-path: inset(70% 0 8% 0);  transform: translateX(-2px) }
+  95%{ clip-path: inset(30% 0 52% 0); transform: translateX(2px) }
+  97%{ clip-path: inset(0 0 100% 0) }
+}
+@keyframes gl2{
+  0%, 82%, 100%{ clip-path: inset(0 0 100% 0); transform: none }
+  83%{ clip-path: inset(60% 0 18% 0); transform: translateX(3px) }
+  86%{ clip-path: inset(22% 0 58% 0); transform: translateX(-3px) }
+  89%{ clip-path: inset(42% 0 40% 0); transform: translateX(2px) }
+  92%{ clip-path: inset(0 0 100% 0) }
+}
+
+/* ---- 右：玻璃卡 ---- */
+.right{
+  justify-self: center;
+  width: 100%;
+  display: grid; place-items: center;
+  min-width: 0;
+}
+
+/* ============================================================
+   5. 卡片：液态玻璃
+   ============================================================ */
+.card{
+  position: relative;
+  width: var(--card-w);
+  height: var(--card-h);
+  border-radius: var(--card-r);
+  will-change: transform;
+  touch-action: none;
+  cursor: grab;
+  /* 入场位移由 JS 写进 transform —— 这里绝不能过渡 transform，
+     否则拖动就会变成“慢半拍地追鼠标” */
+  opacity: 0;
+  transition: opacity .85s var(--ease) .12s;
+  box-shadow:
+    0 40px 80px -28px var(--shadow-1),
+    0 18px 40px -20px var(--shadow-2);
+}
+html.ready .card{ opacity: 1; }
+.card.dragging{ cursor: grabbing; }
+.card.dragging *{ cursor: grabbing !important; }
+
+/* 2.1 折射层：整块背景的像素级副本（canvas），圆角裁剪 */
+.rf{
+  position: absolute;
+  left: calc(var(--bleed) * -1);
+  top: calc(var(--bleed) * -1);
+  width: calc(100% + var(--bleed) * 2);
+  height: calc(100% + var(--bleed) * 2);
+  pointer-events: none;
+  display: block;
+}
+
+/* 2.2 磨砂 */
+.frost{
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  backdrop-filter: var(--frost-filter);
+  -webkit-backdrop-filter: var(--frost-filter);
+  background: var(--frost-tint);
+}
+
+/* 2.3 边缘折射环：锐利倒角，压在磨砂之上 */
+.rf--ring{
+  clip-path: inset(var(--bleed) round var(--card-r));
+  filter: url(#lensRing);
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to top,    transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to left,   transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to right,  transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px));
+  mask-image:
+    linear-gradient(to bottom, transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to top,    transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to left,   transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px)),
+    linear-gradient(to right,  transparent 0, #000 calc(var(--bleed) - 9px), #000 calc(var(--bleed) + 16px), transparent calc(var(--bleed) + 62px));
+}
+
+/* 2.4 反射 / 高光（不再跟随鼠标） */
+.gloss{
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 0 var(--edge-hi),
+    inset 1px 0 0 0 var(--edge-ring),
+    inset -1px 0 0 0 var(--edge-ring),
+    inset 0 -1px 0 0 var(--edge-ring),
+    inset 0 0 0 1px var(--edge-ring);
+}
+.gloss::before{
+  content: ""; position: absolute; inset: -20%;
+  background:
+    radial-gradient(46% 34% at 26% 6%, rgba(255,255,255,.30), rgba(255,255,255,.08) 42%, transparent 66%),
+    radial-gradient(80% 46% at 50% -22%, rgba(255,255,255,.18), transparent 62%),
+    radial-gradient(96% 42% at 50% 124%, rgba(190,215,255,.16), transparent 62%);
+  mix-blend-mode: screen;
+  filter: blur(3px);
+}
+html[data-theme="light"] .gloss::before{
+  background:
+    radial-gradient(46% 34% at 26% 6%, rgba(255,255,255,.55), rgba(255,255,255,.12) 42%, transparent 66%),
+    radial-gradient(80% 46% at 50% -22%, rgba(255,255,255,.4), transparent 62%);
+}
+.gloss::after{
+  content: ""; position: absolute; inset: -40%;
+  background: linear-gradient(108deg,
+      transparent 34%, rgba(255,255,255,.05) 44%,
+      rgba(255,255,255,.12) 50%, rgba(255,255,255,.04) 56%, transparent 66%);
+  mix-blend-mode: screen;
+  filter: blur(6px);
+  animation: sheen 9s cubic-bezier(.5,0,.5,1) infinite;
+}
+@keyframes sheen{
+  0%, 12% { transform: translateX(-42%); opacity: 0 }
+  22%     { opacity: 1 }
+  62%     { opacity: 0 }
+  100%    { transform: translateX(46%); opacity: 0 }
+}
+
+/* 拖动条 */
+.grip{
+  position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+  width: 42px; height: 4px; border-radius: 99px;
+  background: var(--edge-ring);
+  pointer-events: none;
+}
+
+/* ============================================================
+   6. 卡片内容
+   ============================================================ */
+.ui{
+  position: relative; z-index: 3;
+  height: 100%;
+  padding: 26px 30px;
+  display: flex; flex-direction: column;
+}
+.brand{ display:flex; align-items:center; gap:10px; margin-bottom:20px; }
+.brand .mark{
+  width: 30px; height: 30px; border-radius: 10px;
+  background: linear-gradient(140deg, var(--a1), var(--a2) 55%, var(--a3));
+  box-shadow: 0 6px 16px -6px rgba(124,139,255,.9), inset 0 1px 0 rgba(255,255,255,.6);
+  position: relative;
+}
+.brand .mark::after{
+  content:""; position:absolute; inset:8px 8px 12px 8px; border-radius:4px;
+  background: rgba(255,255,255,.55);
+}
+.brand b{ font-size: 14.5px; letter-spacing:.14em; font-weight:650; }
+.brand span{ font-size:10.5px; color:var(--ink-3); letter-spacing:.18em; margin-left:auto; font-family: var(--mono); }
+
+.seg{
+  position: relative;
+  display: grid; grid-template-columns: 1fr 1fr;
+  padding: 4px; border-radius: 14px;
+  background: var(--glass); border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--edge-lo);
+}
+.seg .thumb{
+  position: absolute; top:4px; left:4px; bottom:4px; width: calc(50% - 4px);
+  border-radius: 11px;
+  background: var(--glass-2);
+  box-shadow: 0 4px 12px -4px var(--shadow-1), inset 0 1px 0 var(--edge-hi);
+  transition: transform .42s cubic-bezier(.34,1.3,.5,1);
+}
+.seg[data-active="register"] .thumb{ transform: translateX(100%); }
+.seg button{
+  position: relative; z-index: 1;
+  appearance: none; border: 0; background: none; cursor: pointer;
+  padding: 9px 0; border-radius: 11px;
+  font: inherit; font-size: 13.5px; font-weight: 600; letter-spacing:.06em;
+  color: var(--ink-3); transition: color .28s;
+}
+.seg button[aria-selected="true"]{ color: var(--ink); }
+
+.forms{ position: relative; flex: 1; margin-top: 22px; }
+.form{
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(10px) scale(.985);
+  transition: opacity .34s ease, transform .42s var(--ease), visibility .42s;
+}
+.form.is-on{ opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
+
+h1{ margin: 0 0 6px; font-size: 23px; font-weight: 650; }
+.sub2{ margin: 0 0 18px; font-size: 12.8px; color: var(--ink-2); line-height:1.55; }
+
+.field{
+  position: relative;
+  height: 56px; margin-bottom: 12px;
+  display: flex; align-items: center;
+  border-radius: 15px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--edge-lo);
+  transition: border-color .25s, background .25s, box-shadow .25s;
+}
+.field:focus-within{
+  border-color: rgba(120,160,255,.55);
+  background: var(--glass-2);
+  box-shadow: inset 0 1px 0 var(--edge-hi), 0 0 0 4px rgba(110,140,255,.13);
+}
+.field .ico{
+  position:absolute; left:15px; width:17px; height:17px;
+  color: var(--ink-3); transition: color .25s;
+}
+.field:focus-within .ico{ color: var(--a1); }
+.field input{
+  flex:1; min-width:0; height:100%;
+  padding: 15px 14px 0 44px;
+  background: none; border: 0; outline: 0;
+  font: inherit; font-size: 14.5px; color: var(--ink);
+  caret-color: var(--a3);
+}
+.field input:-webkit-autofill{
+  -webkit-text-fill-color: var(--ink);
+  transition: background-color 9999s;
+}
+.field.has-eye input{ padding-right: 46px; }
+.field .lbl{
+  position: absolute; left: 44px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; color: var(--ink-3); pointer-events: none;
+  transition: top .22s var(--ease), font-size .22s, color .22s, letter-spacing .22s;
+}
+.field input:focus + .lbl,
+.field input:not(:placeholder-shown) + .lbl{
+  top: 15px; font-size: 10.5px; letter-spacing:.1em; color: var(--a1);
+}
+.field .eye{
+  position:absolute; right: 8px; width: 34px; height: 34px;
+  display: grid; place-items: center;
+  background: none; border: 0; cursor: pointer; border-radius: 10px;
+  color: var(--ink-3); transition: color .2s, background .2s;
+}
+.field .eye:hover{ color: var(--ink); background: var(--glass-2); }
+
+.row{
+  display:flex; align-items:center; justify-content:space-between;
+  margin: 2px 0 16px; font-size: 12.5px;
+}
+.check{ display:inline-flex; align-items:center; gap:8px; color: var(--ink-2); cursor:pointer; user-select:none; }
+.check input{ position:absolute; opacity:0; width:0; height:0; }
+.check .box{
+  width:16px; height:16px; border-radius:5px; flex:none;
+  border:1px solid var(--line);
+  background: var(--glass);
+  display:grid; place-items:center;
+  transition: background .2s, border-color .2s;
+}
+.check .box svg{ width:10px; height:10px; opacity:0; transform: scale(.6); transition:.2s; }
+.check input:checked + .box{
+  background: linear-gradient(140deg, var(--a1), var(--a2));
+  border-color: transparent;
+}
+.check input:checked + .box svg{ opacity:1; transform:none; }
+.check input:focus-visible + .box{ box-shadow: 0 0 0 4px rgba(110,140,255,.25); }
+.link{ color: var(--a1); text-decoration:none; transition: opacity .2s; }
+.link:hover{ opacity: .75; }
+
+.btn{
+  position: relative; overflow: hidden;
+  height: 50px; border-radius: 15px; border: 0; cursor: pointer;
+  font: inherit; font-size: 14.5px; font-weight: 620; letter-spacing:.14em;
+  color: #fff;
+  background: linear-gradient(135deg, #6d7dff 0%, #9a63ff 52%, #23c9f5 130%);
+  box-shadow: 0 14px 30px -12px rgba(112,124,255,.95),
+              inset 0 1px 0 rgba(255,255,255,.45);
+  transition: transform .18s, box-shadow .28s, filter .28s;
+}
+.btn:hover{ filter: brightness(1.07); box-shadow: 0 18px 38px -12px rgba(112,124,255,1), inset 0 1px 0 rgba(255,255,255,.5); }
+.btn:active{ transform: translateY(1px) scale(.995); }
+.btn::after{
+  content:""; position:absolute; inset:0;
+  background: linear-gradient(100deg, transparent 38%, rgba(255,255,255,.45) 50%, transparent 62%);
+  transform: translateX(-120%);
+}
+.btn:hover::after{ animation: btnSheen .9s ease; }
+@keyframes btnSheen{ to{ transform: translateX(120%); } }
+.btn[data-loading="1"]{ pointer-events:none; color: transparent; }
+.btn[data-loading="1"]::before{
+  content:""; position:absolute; left:50%; top:50%; width:18px; height:18px; margin:-9px 0 0 -9px;
+  border-radius:50%; border:2px solid rgba(255,255,255,.35); border-top-color:#fff;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin{ to{ transform: rotate(360deg) } }
+.btn.done{ background: linear-gradient(135deg,#28c98a,#17b6a0); }
+
+.divider{
+  display:flex; align-items:center; gap:12px;
+  margin: 18px 0 14px; font-size: 11.5px; color: var(--ink-3);
+  letter-spacing:.1em;
+}
+.divider::before, .divider::after{
+  content:""; flex:1; height:1px;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+}
+.socials{ display:flex; gap:10px; }
+.socials button{
+  flex:1; height: 46px; border-radius: 13px; cursor:pointer;
+  display:grid; place-items:center;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--edge-lo);
+  color: var(--ink-2);
+  transition: background .22s, transform .18s, border-color .22s;
+}
+.socials button:hover{ background: var(--glass-2); transform: translateY(-1px); }
+.socials svg{ width:19px; height:19px; }
+
+.foot{
+  margin-top: auto; padding-top: 16px;
+  text-align:center; font-size: 12.5px; color: var(--ink-2);
+}
+.foot a{ color: var(--a1); text-decoration:none; font-weight:600; margin-left:4px; }
+
+.shake{ animation: shake .42s cubic-bezier(.36,.07,.19,.97); }
+@keyframes shake{
+  10%,90%{ transform: translateX(-1.5px) } 20%,80%{ transform: translateX(3px) }
+  30%,50%,70%{ transform: translateX(-5px) } 40%,60%{ transform: translateX(5px) }
+}
+.tip{
+  height: 15px; margin: -4px 0 8px;
+  font-size: 11.5px; color: #ff7597; opacity:0; transform: translateY(-3px);
+  transition: opacity .2s, transform .2s;
+}
+.tip.on{ opacity:1; transform:none; }
+
+/* ============================================================
+   7. 自适应
+   ============================================================ */
+@keyframes fadeUp{ from{opacity:0; transform: translateY(-8px)} to{opacity:1; transform:none} }
+
+@media (max-width: 1200px){
+  :root{ --card-w: min(420px, 100%); }
+  .stage{
+    grid-template-columns: minmax(0,1fr);
+    align-content: start;
+    gap: 26px;
+    padding: 74px 20px 34px;
+  }
+  .left{ --left-shift: 0px; justify-self: center; text-align: center; max-width: 620px; }
+  .hud{ justify-content: center; }
+  .hud::after{ display: none; }
+  .desc{ margin-left: auto; margin-right: auto; }
+  .stats{ justify-content: center; }
+  .hud-b{ justify-content: center; }
+  .title{ height: clamp(70px, 17vw, 120px); --title-x: 0px; }
+  .theme{ top: 16px; right: 16px; }
+}
+@media (max-width: 700px){
+  .stats, .hud-b{ display: none; }
+  :root{ --card-h: 556px; }
+}
+@media (max-width: 470px){
+  :root{ --card-r: 26px; }
+  .ui{ padding: 22px 20px; }
+  h1{ font-size: 21px; }
+  .desc{ display: none; }
+  .title{ height: clamp(60px, 19vw, 92px); }
+}
+@media (max-height: 700px) and (min-width: 1201px){
+  :root{ --card-h: 560px; }
+  .ui{ padding: 20px 30px; }
+  .brand{ margin-bottom: 12px; }
+  .forms{ margin-top: 16px; }
+  .divider{ margin: 13px 0 10px; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .01s !important; }
+  .card, .left, .theme{ opacity: 1 !important; transform: none !important; }
+  .boot{ display: none !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============ 背景：等高线 ============ -->
+<div id="bg" aria-hidden="true">
+  <canvas id="cnvDark"></canvas>
+  <canvas id="cnvLight"></canvas>
+  <div class="scan"></div>
+  <div class="vig"></div>
+</div>
+
+<!-- ============ 开场动画 ============ -->
+<div class="boot" id="boot">
+  <div class="boot-grid"></div>
+  <div class="boot-scan"></div>
+  <div class="boot-inner">
+    <div class="boot-brand">LUMEN <b>//</b> LIQUID GLASS RUNTIME</div>
+    <div class="boot-log" id="bootLog"></div>
+    <div class="boot-bar"><i id="bootBar"></i></div>
+    <div class="boot-meta"><span id="bootPct">000%</span><span id="bootTag">FRAME 0000</span></div>
+  </div>
+  <div class="boot-flash"></div>
+  <div class="boot-hint">点击任意处跳过</div>
+</div>
+
+<!-- ============ 主题开关 ============ -->
+<button class="theme" id="themeBtn" type="button" aria-label="切换深浅色">
+  <span class="theme-knob"></span>
+  <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>
+  </svg>
+  <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/>
+  </svg>
+</button>
+
+<main class="stage">
+
+  <!-- ============ 左：方块矩阵标题 ============ -->
+  <section class="left">
+    <div class="hud"><span class="dot"></span>SYS·01 / OPTICAL FIELD</div>
+
+    <canvas class="title" id="title" aria-label="LUMEN"></canvas>
+    <div class="glitch sub" data-text="液态玻璃 · LIQUID GLASS">液态玻璃 · LIQUID GLASS</div>
+
+    <p class="desc">
+      地形由 fBm 高程场实时抽取等值线，每一帧都在缓慢变形；玻璃面板则是它的像素级副本，
+      被法线场逐像素掰弯 —— 于是边缘出现真实的折射与色散，中心被磨砂吞掉。<br>
+      拖动右侧面板，看它如何重新解释身后的地形。
+    </p>
+
+    <div class="stats">
+      <div><b>16</b>等高线层级</div>
+      <div><b>3×</b>色散采样</div>
+      <div><b>116×74</b>高程网格</div>
+    </div>
+
+    <div class="hud-b">
+      <span><i></i>LIVE TERRAIN</span>
+      <span><i></i>REFRACTION</span>
+      <span><i></i>DRAGGABLE</span>
+    </div>
+  </section>
+
+  <!-- ============ 右：玻璃卡 ============ -->
+  <section class="right">
+    <div class="card" id="card">
+      <div class="grip" aria-hidden="true"></div>
+
+      <div class="frost" aria-hidden="true"></div>
+      <canvas class="rf rf--ring" id="ring" aria-hidden="true"></canvas>
+      <div class="gloss" aria-hidden="true"></div>
+
+      <div class="ui">
+        <div class="brand">
+          <div class="mark" aria-hidden="true"></div>
+          <b>LUMEN</b>
+          <span>DRAG&nbsp;ME</span>
+        </div>
+
+        <div class="seg" id="seg" role="tablist" aria-label="切换登录或注册" data-active="login">
+          <div class="thumb" aria-hidden="true"></div>
+          <button type="button" role="tab" aria-selected="true"  data-go="login">登 录</button>
+          <button type="button" role="tab" aria-selected="false" data-go="register">注 册</button>
+        </div>
+
+        <div class="forms">
+
+          <!-- ================= 登录 ================= -->
+          <form class="form is-on" data-form="login" novalidate>
+            <h1>欢迎回来</h1>
+            <p class="sub2">登录以继续进入你的工作空间</p>
+
+            <label class="field">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2.5" y="4.5" width="19" height="15" rx="3.5"/><path d="m3.5 7 7.4 5.4a2 2 0 0 0 2.2 0L20.5 7"/>
+              </svg>
+              <input type="text" name="account" placeholder=" " autocomplete="username" required>
+              <span class="lbl">邮箱或手机号</span>
+            </label>
+
+            <label class="field has-eye">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="10.5" width="16" height="10.5" rx="3"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
+              </svg>
+              <input type="password" name="password" placeholder=" " autocomplete="current-password" required minlength="6">
+              <span class="lbl">密码</span>
+              <button class="eye" type="button" data-eye aria-label="显示密码" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3.1"/>
+                </svg>
+              </button>
+            </label>
+
+            <div class="tip" data-tip></div>
+
+            <div class="row">
+              <label class="check">
+                <input type="checkbox" name="remember" checked>
+                <span class="box" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 12.5 5.2 5.2L20 6.8"/></svg>
+                </span>记住我
+              </label>
+              <a class="link" href="#" data-forgot>忘记密码?</a>
+            </div>
+
+            <button class="btn" type="submit" style="margin-top:auto">登 录</button>
+
+            <div class="divider"><span>或使用以下方式</span></div>
+            <div class="socials">
+              <button type="button" aria-label="使用微信登录">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M9.2 3.2C5.3 3.2 2.1 5.8 2.1 9c0 1.8 1 3.4 2.6 4.5l-.7 2.1 2.4-1.2c.8.2 1.7.36 2.6.36h.4a5.6 5.6 0 0 1-.2-1.5c0-3 2.9-5.4 6.5-5.5-.7-2.3-3.5-4-6.5-4Zm-2.4 3.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Zm4.9 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Z"/>
+                  <path d="M22 13.4c0-2.5-2.5-4.6-5.6-4.6s-5.6 2-5.6 4.6 2.5 4.6 5.6 4.6c.7 0 1.4-.1 2-.3l1.9 1-.5-1.7c1.3-.8 2.2-2.1 2.2-3.6Zm-7.4-1.6a.78.78 0 1 1 0 1.56.78.78 0 0 1 0-1.56Zm3.7 0a.78.78 0 1 1 0 1.56.78.78 0 0 1 0-1.56Z"/>
+                </svg>
+              </button>
+              <button type="button" aria-label="使用 Apple 登录">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M16.4 1.4c0 1.14-.42 2.2-1.25 3.06-1 1.02-2.14 1.6-3.37 1.5-.05-.13-.08-.28-.08-.45 0-1.1.45-2.16 1.24-3 1-1.06 2.28-1.66 3.4-1.7.04.2.06.4.06.59ZM20.9 17.2c-.55 1.27-.82 1.83-1.53 2.95-.99 1.57-2.39 3.52-4.12 3.53-1.54.02-1.94-1-4.03-.99-2.09.01-2.53 1.01-4.07.99-1.73-.02-3.05-1.78-4.04-3.34C.5 16.9-.06 12.2 1.6 9.5c1.18-1.92 3.05-3.05 4.8-3.05 1.79 0 2.91 1 4.39 1 1.43 0 2.3-1 4.37-1 1.56 0 3.21.85 4.39 2.32-3.86 2.11-3.23 7.61.35 8.43Z"/>
+                </svg>
+              </button>
+              <button type="button" aria-label="使用邮箱验证码登录">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 6.5h18v11H3z"/><path d="m3.6 7.2 7.3 5.2a2 2 0 0 0 2.2 0l7.3-5.2"/>
+                </svg>
+              </button>
+            </div>
+
+            <div class="foot">还没有账号?<a href="#" data-go-link="register">立即注册</a></div>
+          </form>
+
+          <!-- ================= 注册 ================= -->
+          <form class="form" data-form="register" novalidate>
+            <h1>创建账户</h1>
+            <p class="sub2">只需 30 秒，即可拥有一块属于你的液态玻璃</p>
+
+            <label class="field">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="8" r="3.6"/><path d="M4.6 20a7.4 7.4 0 0 1 14.8 0"/>
+              </svg>
+              <input type="text" name="name" placeholder=" " autocomplete="name" required>
+              <span class="lbl">你的昵称</span>
+            </label>
+
+            <label class="field">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2.5" y="4.5" width="19" height="15" rx="3.5"/><path d="m3.5 7 7.4 5.4a2 2 0 0 0 2.2 0L20.5 7"/>
+              </svg>
+              <input type="email" name="email" placeholder=" " autocomplete="email" required>
+              <span class="lbl">邮箱地址</span>
+            </label>
+
+            <label class="field has-eye">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="10.5" width="16" height="10.5" rx="3"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
+              </svg>
+              <input type="password" name="password" placeholder=" " autocomplete="new-password" required minlength="6">
+              <span class="lbl">设置密码（至少 6 位）</span>
+              <button class="eye" type="button" data-eye aria-label="显示密码" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3.1"/>
+                </svg>
+              </button>
+            </label>
+
+            <label class="field has-eye">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6.5 9.6 17 4 11.4"/>
+              </svg>
+              <input type="password" name="confirm" placeholder=" " autocomplete="new-password" required>
+              <span class="lbl">确认密码</span>
+              <button class="eye" type="button" data-eye aria-label="显示密码" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3.1"/>
+                </svg>
+              </button>
+            </label>
+
+            <div class="tip" data-tip></div>
+
+            <div class="row" style="margin-bottom:14px">
+              <label class="check" style="font-size:12px">
+                <input type="checkbox" name="agree">
+                <span class="box" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 12.5 5.2 5.2L20 6.8"/></svg>
+                </span>我已阅读并同意
+              </label>
+              <a class="link" href="#">服务条款</a>
+            </div>
+
+            <button class="btn" type="submit" style="margin-top:auto">创建账户</button>
+
+            <div class="foot">已经有账号了?<a href="#" data-go-link="login">前往登录</a></div>
+          </form>
+
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 滤镜容器：由 JS 按卡片实际尺寸生成法线贴图 -->
+<svg id="defs" width="0" height="0" style="position:absolute;pointer-events:none" aria-hidden="true"></svg>
+
+<script>
+(function () {
+  'use strict';
+
+  var root   = document.documentElement;
+  var card   = document.getElementById('card');
+  var defs   = document.getElementById('defs');
+  var seg    = document.getElementById('seg');
+  var ringCv = document.getElementById('ring');
+  var rctx   = ringCv.getContext('2d');
+  var layers = [ringCv];
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ==========================================================
+     一、边缘折射：法线贴图 + 位移 + 色散
+     ========================================================== */
+  function makeMap(w, h, r, e0, e1, e2, e3) {
+    var cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    var ctx = cv.getContext('2d');
+    var img = ctx.createImageData(w, h);
+    var d = img.data;
+
+    function sd(x, y) {                       // 圆角矩形有符号距离（内负外正）
+      var cx = Math.abs(x - w / 2) - (w / 2 - r);
+      var cy = Math.abs(y - h / 2) - (h / 2 - r);
+      return Math.min(Math.max(cx, cy), 0) +
+             Math.hypot(Math.max(cx, 0), Math.max(cy, 0)) - r;
+    }
+    function smooth(a, b, x) {
+      var t = Math.min(Math.max((x - a) / (b - a), 0), 1);
+      return t * t * (3 - 2 * t);
+    }
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var i = (y * w + x) * 4;
+        var depth = Math.max(0, -sd(x + .5, y + .5));
+        var t = smooth(e0, e1, depth) * (1 - smooth(e2, e3, depth));
+        var gx = sd(x + 1.7, y + .5) - sd(x - .7, y + .5);
+        var gy = sd(x + .5, y + 1.7) - sd(x + .5, y - .7);
+        var L = Math.hypot(gx, gy) || 1;
+        d[i]     = 128 + (gx / L) * t * 127;
+        d[i + 1] = 128 + (gy / L) * t * 127;
+        d[i + 2] = 128;
+        d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return cv.toDataURL('image/png');
+  }
+  function disp(scale, out) {
+    return '<feDisplacementMap in="SourceGraphic" in2="map" scale="' + scale +
+           '" xChannelSelector="R" yChannelSelector="G" result="' + out + '"/>';
+  }
+  function chromatic(scale) {                 // 三次位移 + 通道合成 = 真实色散
+    var k = 0.86;
+    return disp(scale * k, 'cR') + disp(scale, 'cG') + disp(scale * (2 - k), 'cB') +
+      '<feColorMatrix in="cR" type="matrix" values="1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0" result="mR"/>' +
+      '<feColorMatrix in="cG" type="matrix" values="0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1 0" result="mG"/>' +
+      '<feColorMatrix in="cB" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 0" result="mB"/>' +
+      '<feBlend in="mR" in2="mG" mode="screen" result="mRG"/>' +
+      '<feBlend in="mRG" in2="mB" mode="screen"/>';
+  }
+  function filter(id, map, w, h, body) {
+    return '<filter id="' + id + '" x="0" y="0" width="' + w + '" height="' + h + '" ' +
+           'filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">' +
+           '<feImage href="' + map + '" x="0" y="0" width="' + w + '" height="' + h + '" ' +
+           'preserveAspectRatio="none" result="map"/>' + body + '</filter>';
+  }
+  var built = '', useCA = true;
+  function build(w, h, r, ca) {
+    var ringMap = makeMap(w, h, r, 0, 7, 20, 60);
+    return filter('lensRing', ringMap, w, h, ca ? chromatic(96) : disp(96, 'o'));
+  }
+
+  /* ==========================================================
+     二、等高线背景
+     ----------------------------------------------------------
+     值噪声 + fBm 生成高程场，再用 Marching Squares 抽等值线，
+     烘焙成“深色 / 浅色”两张离屏画布。
+     主题切换 = 两层交叉淡入；漂移 = CSS transform（合成器层）。
+     ========================================================== */
+  var PAD  = 92;
+  var cnvD = document.getElementById('cnvDark');
+  var cnvL = document.getElementById('cnvLight');
+
+  var PAL = {
+    dark: {
+      bg: '#04060c', seed: 11,
+      lineA: 'rgba(132,204,255,.30)', lineB: 'rgba(96,146,214,.13)',
+      glow: 'rgba(110,180,255,.055)', grain: 15, vig: 'rgba(0,0,0,.5)'
+    },
+    light: {
+      bg: '#e9edf5', seed: 11,
+      lineA: 'rgba(52,86,140,.42)', lineB: 'rgba(104,136,184,.22)',
+      glow: 'rgba(60,100,160,.05)', grain: 22, vig: 'rgba(120,140,175,.22)'
+    }
+  };
+
+  function hash2(x, y, s) {
+    var h = (x | 0) * 374761393 + (y | 0) * 668265263 + s * 144665;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return ((h ^ (h >> 16)) >>> 0) / 4294967296;
+  }
+  function vnoise(x, y, s) {
+    var xi = Math.floor(x), yi = Math.floor(y);
+    var xf = x - xi, yf = y - yi;
+    var u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    var a = hash2(xi, yi, s),     b = hash2(xi + 1, yi, s);
+    var c = hash2(xi, yi + 1, s), dd = hash2(xi + 1, yi + 1, s);
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + dd * u) * v;
+  }
+  function fbm(x, y, s, tz, zoom) {
+    // 每个倍频以不同速度/方向漂移 —— 于是地形是“变形”而不是整体平移
+    var sum = 0, amp = 0.5, f = zoom;
+    for (var o = 0; o < 5; o++) {
+      sum += amp * vnoise(x * f + tz * (0.55 + o * 0.42),
+                          y * f - tz * (0.22 + o * 0.28), s + o * 37);
+      amp *= 0.5; f *= 2;
+    }
+    return sum;
+  }
+
+  // Marching Squares：edge 0=上 1=右 2=下 3=左
+  var MS = [
+    [], [[3, 2]], [[2, 1]], [[3, 1]], [[1, 0]],
+    [[3, 0], [1, 2]], [[2, 0]], [[3, 0]],
+    [[0, 3]], [[0, 2]], [[0, 1], [2, 3]], [[0, 1]],
+    [[1, 3]], [[1, 2]], [[2, 3]], []
+  ];
+
+  var grainCache = {};
+  function grainFor(pal) {
+    if (grainCache[pal.bg]) return grainCache[pal.bg];
+    var g = document.createElement('canvas');
+    g.width = g.height = 128;
+    var gc = g.getContext('2d');
+    var gi = gc.createImageData(128, 128);
+    for (var q = 0; q < 128 * 128; q++) {
+      var n = 120 + Math.random() * 135;
+      gi.data[q * 4] = gi.data[q * 4 + 1] = gi.data[q * 4 + 2] = n;
+      gi.data[q * 4 + 3] = Math.random() * pal.grain;
+    }
+    gc.putImageData(gi, 0, 0);
+    grainCache[pal.bg] = g;
+    return g;
+  }
+
+  function paintLayer(cv, pal, W, H, dpr, tz, resize) {
+    var pw = Math.round(W * dpr), ph = Math.round(H * dpr);
+    if (resize || cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+    var c = cv.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    c.fillStyle = pal.bg;
+    c.fillRect(0, 0, W, H);
+
+    var zoom = 1 + 0.14 * Math.sin(tz * 0.34);
+    var GW = 116, GH = 74;
+    var field = new Float32Array((GW + 1) * (GH + 1));
+    var mn = 1e9, mx = -1e9, i, j;
+    for (j = 0; j <= GH; j++) {
+      for (i = 0; i <= GW; i++) {
+        var v = fbm(i / GW * 3.4, j / GH * 2.3, pal.seed, tz, zoom);
+        field[j * (GW + 1) + i] = v;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+    }
+
+    var sx = W / GW, sy = H / GH;
+    var LEVELS = 16;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+
+    for (var L = 0; L < LEVELS; L++) {
+      var lv = mn + (mx - mn) * (L + 0.5) / LEVELS;
+      var major = (L % 4 === 0);
+      c.beginPath();
+      for (j = 0; j < GH; j++) {
+        for (i = 0; i < GW; i++) {
+          var v0 = field[j * (GW + 1) + i];         // 左上
+          var v1 = field[j * (GW + 1) + i + 1];     // 右上
+          var v2 = field[(j + 1) * (GW + 1) + i + 1]; // 右下
+          var v3 = field[(j + 1) * (GW + 1) + i];   // 左下
+          var idx = (v0 > lv ? 8 : 0) | (v1 > lv ? 4 : 0) | (v2 > lv ? 2 : 0) | (v3 > lv ? 1 : 0);
+          if (idx === 0 || idx === 15) continue;
+          var x0 = i * sx, y0 = j * sy, x1 = (i + 1) * sx, y1 = (j + 1) * sy;
+          var tp = (lv - v0) / (v1 - v0 || 1e-6);
+          var rp = (lv - v1) / (v2 - v1 || 1e-6);
+          var bp = (lv - v3) / (v2 - v3 || 1e-6);
+          var lp = (lv - v0) / (v3 - v0 || 1e-6);
+          var E = [
+            [x0 + (x1 - x0) * tp, y0],
+            [x1, y0 + (y1 - y0) * rp],
+            [x0 + (x1 - x0) * bp, y1],
+            [x0, y0 + (y1 - y0) * lp]
+          ];
+          var segs = MS[idx];
+          for (var s = 0; s < segs.length; s++) {
+            var A = E[segs[s][0]], B = E[segs[s][1]];
+            c.moveTo(A[0], A[1]);
+            c.lineTo(B[0], B[1]);
+          }
+        }
+      }
+      if (major) { c.strokeStyle = pal.glow; c.lineWidth = 4.5; c.stroke(); }
+      c.strokeStyle = major ? pal.lineA : pal.lineB;
+      c.lineWidth = major ? 1.25 : 0.7;
+      c.stroke();
+    }
+
+    // 颗粒
+    c.fillStyle = c.createPattern(grainFor(pal), 'repeat');
+    c.fillRect(0, 0, W, H);
+  }
+
+  /* ==========================================================
+     三、方块矩阵标题
+     ========================================================== */
+  var T = {
+    text: 'LUMEN', cv: null, ctx: null,
+    w: 1, h: 1, dpr: 1, block: 8, cells: [],
+    t0: 0, nextGlitch: 0, glitchEnd: 0, bands: []
+  };
+  var TCOL = {
+    dark:  { base: [233, 240, 255], hot: [255, 209, 102], cyan: [47, 216, 255], red: [255, 79, 139] },
+    light: { base: [15, 22, 38],    hot: [196, 138, 12],  cyan: [0, 132, 180],  red: [204, 28, 78] }
+  };
+
+  function buildTitle() {
+    var cv = document.getElementById('title');
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    T.cv = cv; T.w = w; T.h = h;
+    T.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(w * T.dpr);
+    cv.height = Math.round(h * T.dpr);
+    T.ctx = cv.getContext('2d');
+
+    T.block = Math.max(5, Math.round(w / 76));
+    var cols = Math.max(8, Math.floor(w / T.block));
+    var rows = Math.max(6, Math.floor(h / T.block));
+
+    // 把字形缩到 cols×rows 采样：一个像素 = 一个方块
+    var s = document.createElement('canvas');
+    s.width = cols; s.height = rows;
+    var sc = s.getContext('2d');
+    sc.fillStyle = '#000'; sc.fillRect(0, 0, cols, rows);
+    sc.fillStyle = '#fff';
+    sc.textAlign = 'center'; sc.textBaseline = 'middle';
+    var fs = rows * 1.22;
+    var fam = '"Arial Black", "Segoe UI Black", Impact, system-ui, sans-serif';
+    sc.font = '900 ' + fs + 'px ' + fam;
+    var mw = sc.measureText(T.text).width;
+    if (mw > cols * 0.96) {
+      fs *= (cols * 0.96) / mw;
+      sc.font = '900 ' + fs + 'px ' + fam;
+    }
+    sc.fillText(T.text, cols / 2, rows / 2 + rows * 0.04);
+
+    var data = sc.getImageData(0, 0, cols, rows).data;
+    T.cells = [];
+    for (var y = 0; y < rows; y++) {
+      for (var x = 0; x < cols; x++) {
+        var a = data[(y * cols + x) * 4] / 255;
+        if (a < 0.16) continue;
+        T.cells.push({
+          x: x, y: y, a: a,
+          rx: (Math.random() * 2 - 1) * (90 + Math.random() * 150),
+          ry: (Math.random() * 2 - 1) * (50 + Math.random() * 90),
+          rd: Math.random() * 0.42,              // 组装错峰
+          ph: Math.random() * 6.28,              // 闪烁相位
+          hot: Math.random() < 0.035             // 少量高亮块
+        });
+      }
+    }
+  }
+
+  function mixCol(a, b, k) {
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * k) + ',' +
+                    Math.round(a[1] + (b[1] - a[1]) * k) + ',' +
+                    Math.round(a[2] + (b[2] - a[2]) * k) + ')';
+  }
+
+  function drawTitle(now) {
+    var ctx = T.ctx;
+    if (!ctx) return;
+    var d = T.dpr, w = T.w, h = T.h, B = T.block;
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var t = Math.max(0, (now - T.t0) / 1000);
+    var asm = reduce ? 1 : Math.min(1, Math.max(0, (t - 0.1) / 1.15));   // 组装进度
+
+    // 故障调度（减弱动效时不触发）
+    if (!reduce && now >= T.nextGlitch) {
+      T.glitchEnd = now + 70 + Math.random() * 150;
+      T.nextGlitch = T.glitchEnd + 1500 + Math.random() * 3600;
+      T.bands = [];
+      var n = 1 + (Math.random() * 3 | 0);
+      for (var b = 0; b < n; b++) {
+        T.bands.push({
+          y0: Math.random(), hh: 0.05 + Math.random() * 0.15,
+          dx: (Math.random() * 2 - 1) * 14
+        });
+      }
+    }
+    var glitching = !reduce && now < T.glitchEnd;
+
+    var gk = themeMix;
+    var C = TCOL.dark, L = TCOL.light;
+    var base = [C.base[0] + (L.base[0] - C.base[0]) * gk,
+                C.base[1] + (L.base[1] - C.base[1]) * gk,
+                C.base[2] + (L.base[2] - C.base[2]) * gk];
+    var hotC = mixCol(C.hot, L.hot, gk);
+    var cyanC = mixCol(C.cyan, L.cyan, gk);
+    var redC = mixCol(C.red, L.red, gk);
+    var baseC = 'rgba(' + Math.round(base[0]) + ',' + Math.round(base[1]) + ',' + Math.round(base[2]) + ',';
+
+    for (var i = 0; i < T.cells.length; i++) {
+      var c = T.cells[i];
+      var prog = Math.min(1, Math.max(0, (asm - c.rd) / 0.58));
+      var e = 1 - Math.pow(1 - prog, 3);                    // easeOutCubic
+      if (e <= 0.001) continue;
+
+      var px = c.x * B + (1 - e) * c.rx;
+      var py = c.y * B + (1 - e) * c.ry;
+
+      var alpha = c.a * e;
+      // 常态闪烁 + 扫描线扫过时提亮
+      var fl = 1, scan = 0;
+      if (!reduce) {
+        fl = 0.78 + 0.22 * Math.sin(t * 2.1 + c.ph);
+        scan = Math.exp(-Math.pow((c.y * B - (t * 62 % (h + 120))) / 46, 2));
+      }
+      alpha *= fl + scan * 0.55;
+      if (c.hot) alpha = Math.min(1.25, alpha + 0.45);
+
+      var band = null;
+      if (glitching) {
+        var ny = c.y / Math.max(1, Math.round(h / B));
+        for (var q = 0; q < T.bands.length; q++) {
+          var bd = T.bands[q];
+          if (ny >= bd.y0 && ny <= bd.y0 + bd.hh) { band = bd; break; }
+        }
+      }
+
+      var size = B * 0.76;
+      if (band) {
+        var bx = px + band.dx;
+        ctx.fillStyle = 'rgba(255,60,110,' + Math.min(1, alpha * 0.85) + ')';
+        ctx.fillRect(bx - 3, py, size, size);
+        ctx.fillStyle = 'rgba(70,225,255,' + Math.min(1, alpha * 0.85) + ')';
+        ctx.fillRect(bx + 3, py, size, size);
+        ctx.fillStyle = baseC + Math.min(1, alpha) + ')';
+        ctx.fillRect(bx, py, size, size);
+      } else {
+        ctx.fillStyle = c.hot ? hotC : baseC + Math.min(1, alpha) + ')';
+        ctx.globalAlpha = c.hot ? Math.min(1, alpha) : 1;
+        ctx.fillRect(px, py, size, size);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  /* ==========================================================
+     四、主循环 / 对齐 / 拖动
+     ========================================================== */
+  var BG = { t: 0, dx: 0, dy: 0, sc: 1, w: 1, h: 1, dpr: 1, dprCap: 1.5 };
+  var dgx = 0, dgy = 0;               // 拖动位移
+  var enterY = 34, enterT = -1;       // 入场位移（JS 缓动，避免与拖动抢 transform）
+  var tx = 0, ty = 0;                 // 合成后的总位移
+  var themeMix = 0, themeTarget = 0, themeT0 = -1;
+  var lastDx = 1e9, lastDy = 1e9, lastSc = 1e9;
+
+  function compose() { tx = dgx; ty = dgy + enterY; }
+
+  function measure() {
+    layers.forEach(function (el) {
+      var rc = el.getBoundingClientRect();
+      el._x = rc.left - tx;
+      el._y = rc.top  - ty;
+    });
+    var cr = card.getBoundingClientRect();
+    card._bx = cr.left - tx;
+    card._by = cr.top  - ty;
+    card._bw = cr.width;
+    card._bh = cr.height;
+  }
+  function paint() {
+    card.style.transform = 'translate3d(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px,0)';
+  }
+  function clampDrag() {
+    var vw = document.documentElement.clientWidth;
+    var vh = document.documentElement.clientHeight;
+    var KEEP = 96;
+    var l = card._bx + tx, r = l + card._bw;
+    if (l > vw - KEEP) tx = vw - KEEP - card._bx;
+    if (r < KEEP) tx = KEEP - card._bw - card._bx;
+    var tp = card._by + ty, bt = tp + card._bh;
+    if (tp > vh - KEEP) ty = vh - KEEP - card._by;
+    if (bt < KEEP) ty = KEEP - card._bh - card._by;
+  }
+
+  function relayout() {
+    BG.w = document.documentElement.clientWidth;
+    BG.h = document.documentElement.clientHeight;
+    BG.dpr = Math.min(window.devicePixelRatio || 1, BG.dprCap);
+
+    var LW = BG.w + PAD * 2, LH = BG.h + PAD * 2;
+    var tz = BG.t * 0.1;
+    paintLayer(cnvD, PAL.dark,  LW, LH, BG.dpr, tz, true);
+    paintLayer(cnvL, PAL.light, LW, LH, BG.dpr, tz, true);
+
+    var el = layers[0];
+    el._w = el.offsetWidth;
+    el._h = el.offsetHeight;
+    el.width  = Math.round(el._w * BG.dpr);
+    el.height = Math.round(el._h * BG.dpr);
+    var bleed = parseFloat(getComputedStyle(root).getPropertyValue('--bleed')) || 60;
+    var rr = Math.round(parseFloat(getComputedStyle(card).borderTopLeftRadius) + bleed);
+    var key = el._w + 'x' + el._h + 'x' + rr;
+    if (key !== built) {
+      built = key;
+      defs.innerHTML = build(el._w, el._h, rr, useCA);
+    }
+
+    buildTitle();
+    compose();
+    measure();
+    clampDrag();
+    paint();
+  }
+
+  // 让地形持续“流动”：实测一次重建约 2.3ms，隔帧重算即可
+  var morphTick = 0, morphEvery = 2;
+  function morphLayers() {
+    var tz = BG.t * 0.1;
+    var LW = BG.w + PAD * 2, LH = BG.h + PAD * 2;
+    if (themeMix < 0.996) paintLayer(cnvD, PAL.dark,  LW, LH, BG.dpr, tz, false);
+    if (themeMix > 0.004) paintLayer(cnvL, PAL.light, LW, LH, BG.dpr, tz, false);
+  }
+
+  // 把背景按视口偏移裁进折射 canvas —— 这就是“实时副本”。
+  // 背景带 translate + scale，所以这里要用逆变换把整张层画进去。
+  function blitRing() {
+    if (!rctx || !ringCv._w || !cnvD.width) return;
+    var d = BG.dpr;
+    var ox = ringCv._x + tx, oy = ringCv._y + ty;
+    var Cx = BG.w / 2, Cy = BG.h / 2;
+    var inv = 1 / BG.sc;
+    var k  = d * inv;
+    var ex = (PAD + Cx - (Cx + BG.dx) * inv + ox * inv) * d;
+    var ey = (PAD + Cy - (Cy + BG.dy) * inv + oy * inv) * d;
+
+    rctx.setTransform(1, 0, 0, 1, 0, 0);
+    rctx.globalAlpha = 1;
+    rctx.fillStyle = themeMix > 0.5 ? PAL.light.bg : PAL.dark.bg;
+    rctx.fillRect(0, 0, ringCv.width, ringCv.height);
+
+    if (themeMix < 0.996) {
+      rctx.setTransform(k, 0, 0, k, ex, ey);
+      rctx.globalAlpha = 1 - themeMix;
+      rctx.drawImage(cnvD, 0, 0);
+    }
+    if (themeMix > 0.004) {
+      rctx.setTransform(k, 0, 0, k, ex, ey);
+      rctx.globalAlpha = themeMix;
+      rctx.drawImage(cnvL, 0, 0);
+    }
+    rctx.setTransform(1, 0, 0, 1, 0, 0);
+    rctx.globalAlpha = 1;
+  }
+
+  var raf = 0, last = 0, acc = 0, frames = 0, warm = 0, stage = 0;
+
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    var ms = last ? now - last : 16;
+    last = now;
+    if (document.hidden) return;
+    BG.t = now / 1000;
+
+    // 主题过渡（视图过渡不可用时的回退：两层交叉淡入 + CSS 颜色过渡）
+    if (themeT0 >= 0) {
+      var k = Math.min(1, (now - themeT0) / 720);
+      var e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      themeMix = themeTarget === 1 ? e : 1 - e;
+      if (k >= 1) { themeMix = themeTarget; themeT0 = -1; }
+      syncMix();
+    }
+
+    // 入场位移（JS 缓动，绝不占用 CSS transition）
+    if (enterT >= 0) {
+      var ek = Math.min(1, (now - enterT) / 950);
+      enterY = 34 * Math.pow(1 - ek, 3);
+      if (ek >= 1) { enterY = 0; enterT = -1; }
+      compose(); paint();
+    }
+
+    // 等高线漂移 + 缓慢呼吸（纯 transform，跑在合成器上）
+    if (!reduce) {
+      var dx = Math.sin(BG.t * 0.047) * 26;
+      var dy = Math.cos(BG.t * 0.038) * 20;
+      var sc = 1 + 0.014 * Math.sin(BG.t * 0.09);
+      if (Math.abs(dx - lastDx) > 0.03 || Math.abs(dy - lastDy) > 0.03 || Math.abs(sc - lastSc) > 0.0004) {
+        lastDx = dx; lastDy = dy; lastSc = sc;
+        BG.dx = dx; BG.dy = dy; BG.sc = sc;
+        var tr = 'translate3d(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px,0) scale(' + sc.toFixed(4) + ')';
+        cnvD.style.transform = tr;
+        cnvL.style.transform = tr;
+      }
+      // 地形本身在流动
+      morphTick++;
+      if (morphTick % morphEvery === 0) morphLayers();
+    }
+
+    if (ready) drawTitle(now);
+    blitRing();
+
+    // 性能自适应：先关边缘色散，再降内部署分辨率
+    if (stage < 2) {
+      if (warm < 24) { warm++; }
+      else {
+        acc += ms; frames++;
+        if (frames >= 45 || acc > 1200) {
+          var avg = acc / frames;
+          acc = 0; frames = 0; stage++;
+          if (avg > 26) {
+            if (stage === 1) { useCA = false; built = ''; }
+            else { BG.dprCap = 1; built = ''; morphEvery = 3; }
+            relayout();
+          }
+        }
+      }
+    }
+  }
+
+  /* ---------------- 拖动（实时跟手） ---------------- */
+  var drag = { on: false, sx: 0, sy: 0, bx: 0, by: 0, id: 0 };
+  card.addEventListener('pointerdown', function (e) {
+    if (e.target.closest('input, button, a, label, select, textarea')) return;
+    drag.on = true; drag.id = e.pointerId;
+    drag.sx = e.clientX; drag.sy = e.clientY;
+    drag.bx = dgx; drag.by = dgy;
+    card.classList.add('dragging');
+    try { card.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  card.addEventListener('pointermove', function (e) {
+    if (!drag.on || e.pointerId !== drag.id) return;
+    dgx = drag.bx + (e.clientX - drag.sx);
+    dgy = drag.by + (e.clientY - drag.sy);
+    compose();
+    clampDrag();
+    paint();
+  });
+  function endDrag(e) {
+    if (!drag.on) return;
+    drag.on = false;
+    card.classList.remove('dragging');
+    try { card.releasePointerCapture(e.pointerId); } catch (err) {}
+  }
+  card.addEventListener('pointerup', endDrag);
+  card.addEventListener('pointercancel', endDrag);
+
+  /* ---------------- 主题 ---------------- */
+  var theme = root.getAttribute('data-theme') || 'dark';
+  themeMix = theme === 'light' ? 1 : 0;
+  themeTarget = themeMix;
+  function syncMix() {
+    cnvD.style.opacity = (1 - themeMix).toFixed(3);
+    cnvL.style.opacity = themeMix.toFixed(3);
+  }
+  function applyInstant(next) {
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('lg-theme', next); } catch (e) {}
+    themeTarget = next === 'light' ? 1 : 0;
+    themeMix = themeTarget; themeT0 = -1;
+    syncMix();
+    // 两层刷成同一时刻的地形，交叉淡入时才不会出现“两个地形”
+    var tz = BG.t * 0.1;
+    paintLayer(cnvD, PAL.dark,  BG.w + PAD * 2, BG.h + PAD * 2, BG.dpr, tz, false);
+    paintLayer(cnvL, PAL.light, BG.w + PAD * 2, BG.h + PAD * 2, BG.dpr, tz, false);
+  }
+  syncMix();
+
+  var themeTimer = 0;
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    var r = this.getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+
+    // 首选：整页视图过渡 + 以按钮为圆心的渐变揭示
+    if (!reduce && typeof document.startViewTransition === 'function') {
+      var vt = document.startViewTransition(function () { applyInstant(next); });
+      vt.ready.then(function () {
+        var R = Math.hypot(Math.max(cx, BG.w - cx), Math.max(cy, BG.h - cy));
+        root.animate(
+          { clipPath: ['circle(0px at ' + cx.toFixed(1) + 'px ' + cy.toFixed(1) + 'px)',
+                       'circle(' + Math.ceil(R) + 'px at ' + cx.toFixed(1) + 'px ' + cy.toFixed(1) + 'px)'] },
+          { duration: 780, easing: 'cubic-bezier(.4,0,.2,1)',
+            pseudoElement: '::view-transition-new(root)' }
+        );
+      }).catch(function () {});
+      return;
+    }
+    // 回退：整体渐变
+    root.classList.add('theming');
+    clearTimeout(themeTimer);
+    themeTimer = setTimeout(function () { root.classList.remove('theming'); }, 820);
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('lg-theme', next); } catch (e) {}
+    themeTarget = next === 'light' ? 1 : 0;
+    themeT0 = performance.now();
+  });
+
+  /* ---------------- 交互 ---------------- */
+  function go(name) {
+    if (seg.dataset.active === name) return;
+    seg.dataset.active = name;
+    Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.go === name));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.form'), function (f) {
+      f.classList.toggle('is-on', f.dataset.form === name);
+    });
+    var on = document.querySelector('.form.is-on input');
+    if (on) setTimeout(function () { on.focus({ preventScroll: true }); }, 180);
+  }
+  seg.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-go]');
+    if (b) go(b.dataset.go);
+  });
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('[data-go-link]');
+    if (a) { e.preventDefault(); go(a.dataset.goLink); }
+  });
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-eye]');
+    if (!b) return;
+    var input = b.closest('.field').querySelector('input');
+    var show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    b.setAttribute('aria-pressed', String(show));
+    b.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+    b.style.color = show ? 'var(--a3)' : '';
+  });
+
+  function tipOf(form, msg) {
+    var t = form.querySelector('[data-tip]');
+    if (!t) return;
+    t.textContent = msg || '';
+    t.classList.toggle('on', !!msg);
+    if (msg) {
+      form.classList.add('shake');
+      setTimeout(function () { form.classList.remove('shake'); }, 460);
+    }
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.form'), function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var data = new FormData(form);
+      var isReg = form.dataset.form === 'register';
+      var email = (data.get('email') || data.get('account') || '').trim();
+      var pwd = data.get('password') || '';
+
+      if (isReg && !(data.get('name') || '').trim()) return tipOf(form, '请先填写你的昵称');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return tipOf(form, '请输入有效的邮箱地址');
+      if (pwd.length < 6) return tipOf(form, '密码至少需要 6 位');
+      if (isReg && pwd !== data.get('confirm')) return tipOf(form, '两次输入的密码不一致');
+      if (isReg && !data.get('agree')) return tipOf(form, '请先阅读并同意服务条款');
+      tipOf(form, '');
+
+      var btn = form.querySelector('.btn');
+      var label = btn.textContent;
+      btn.dataset.loading = '1';
+      setTimeout(function () {
+        delete btn.dataset.loading;
+        btn.classList.add('done');
+        btn.textContent = isReg ? '✓  注册成功' : '✓  登录成功';
+        setTimeout(function () {
+          btn.classList.remove('done');
+          btn.textContent = label;
+        }, 1600);
+      }, 1100);
+    });
+  });
+  document.addEventListener('click', function (e) {
+    var f = e.target.closest('[data-forgot]');
+    if (f) { e.preventDefault(); tipOf(document.querySelector('.form.is-on'), '重置链接已发送到你的邮箱'); }
+  });
+
+  /* ==========================================================
+     五、开场动画
+     ========================================================== */
+  var boot = document.getElementById('boot');
+  var bootLog = document.getElementById('bootLog');
+  var bootBar = document.getElementById('bootBar');
+  var bootPct = document.getElementById('bootPct');
+  var ready = false;
+  var bootTimers = [];
+
+  var LINES = [
+    ['LIQUID-GLASS CORE', 'v2.4.1'],
+    ['MOUNT   REFRACTION PIPELINE', 'OK'],
+    ['CALIB   OPTICAL FIELD / 16 LEVELS', 'OK'],
+    ['LINK    RENDER TARGET', 'STABLE']
+  ];
+
+  function bootStart() {
+    if (reduce) { finishBoot(true); return; }
+    var t0 = performance.now();
+    LINES.forEach(function (ln, i) {
+      bootTimers.push(setTimeout(function () {
+        var d = document.createElement('div');
+        d.innerHTML = '&gt; ' + ln[0] + ' <u>................</u> <i>' + ln[1] + '</i>';
+        bootLog.appendChild(d);
+      }, 140 + i * 330));
+    });
+    // 进度条：带一点“卡顿感”，不是匀速
+    (function tick() {
+      var e = Math.min(1, (performance.now() - t0) / 2000);
+      var v = e < 0.7 ? e * 1.12 : 0.784 + (e - 0.7) * 0.72;
+      v = Math.max(0, Math.min(1, v));
+      bootBar.style.width = (v * 100).toFixed(1) + '%';
+      bootPct.textContent = String(Math.round(v * 100)).padStart(3, '0') + '%';
+      document.getElementById('bootTag').textContent =
+        'FRAME ' + String(Math.round(e * 2400)).padStart(4, '0');
+      if (e < 1 && !boot._skip) bootTimers.push(setTimeout(tick, 40));
+      else if (!boot._skip) finishBoot(false);
+    })();
+    bootTimers.push(setTimeout(function () { if (!boot._skip) finishBoot(false); }, 2700));
+  }
+
+  function finishBoot(instant) {
+    if (boot._done) return;
+    boot._done = true;
+    boot._skip = true;
+    bootTimers.forEach(clearTimeout);
+    bootBar.style.width = '100%';
+    bootPct.textContent = '100%';
+    if (instant) {
+      boot.classList.add('done');
+      root.classList.add('ready');
+      ready = true;
+      enterY = 0; enterT = -1;
+      compose();
+      T.t0 = performance.now() - 4000;
+      return;
+    }
+    boot.classList.add('flash');
+    setTimeout(function () { boot.classList.add('out'); }, 120);
+    setTimeout(function () {
+      boot.classList.add('done');
+      root.classList.add('ready');
+      ready = true;
+      T.t0 = performance.now();
+      enterT = performance.now();
+      compose();
+      measure();
+      paint();
+    }, 620);
+  }
+
+  function skipBoot() {
+    if (boot._done) return;
+    finishBoot(false);
+  }
+  window.addEventListener('pointerdown', skipBoot, { once: true });
+  window.addEventListener('keydown', skipBoot, { once: true });
+
+  /* ==========================================================
+     六、生命周期
+     ========================================================== */
+  relayout();
+  if (/#register$/.test(location.hash)) go('register');
+  T.t0 = performance.now() + 6000;          // 开场结束前不组装
+
+  var rt = 0;
+  window.addEventListener('resize', function () {
+    clearTimeout(rt);
+    rt = setTimeout(function () { relayout(); }, 140);
+  });
+  window.addEventListener('scroll', function () {
+    requestAnimationFrame(function () { measure(); paint(); });
+  }, { passive: true });
+
+  last = 0;
+  raf = requestAnimationFrame(frame);
+  bootStart();
+})();
+</script>
+</body>
+</html>

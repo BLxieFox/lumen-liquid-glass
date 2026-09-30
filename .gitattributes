@@ -1,0 +1,8 @@
+# 统一换行符，避免跨平台差异
+* text=auto eol=lf
+
+# 二进制资源
+*.jpg binary
+*.png binary
+*.gif binary
+*.webp binary

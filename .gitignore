@@ -1,0 +1,14 @@
+# 编辑器 / 系统垃圾
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+*.tmp
+~$*
+
+# 本地调试脚手架
+_lab/
